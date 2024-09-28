@@ -6,3 +6,4 @@ data/
 results/
 docs/
 .gitignore
+.DS_Store
