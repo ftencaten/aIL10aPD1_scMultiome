@@ -1,0 +1,553 @@
+---
+title: "scmultiome_analysis"
+author: "Felipe ten-Caten - ftencat@emory.edu"
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r Load libraries}
+library(Seurat)
+library(Signac)
+library(tidyverse)
+library(clusterProfiler)
+
+#library(AnnotationHub)
+#
+#ah <- AnnotationHub()
+#
+#qrz <- query(ah, c( "mulatta"))
+#
+#qr <- query(ah, c("EnsDb", "mulatta", "109"))
+#edb <- qr[[1]]
+```
+
+```{r Pre-processing}
+#aggr file
+aggr <- read_csv('data/raw/aggr.csv')
+
+aggr.id <- aggr %>% 
+  mutate(barcode_id = row_number()) %>% 
+  mutate(library_id = sub('p23050-|p24142_', '', library_id)) %>% 
+  dplyr::select(barcode_id, library_id) |> 
+  mutate(library_id = sub('_v2', '', sub('s', '', library_id)))
+
+# barcode metric
+barcode_metric_files <- list.files('data/raw/barcode_metrics/', 
+                                   full.names = T)
+
+meta <- read_csv(barcode_metric_files, id = "path") %>% 
+  dplyr::filter(is_cell == 1)
+
+metadata <- meta %>% 
+  mutate(path = sub('.*_', '', path)) %>% 
+  mutate(path = sub('.csv', '', path)) |>   
+  left_join(aggr.id, by = c('path' = 'library_id')) %>% 
+  relocate(barcode_id)  |> 
+  mutate(barcode = paste0(sub('1', '', barcode), barcode_id)) %>% 
+  dplyr::select(-c(barcode_id, path)) 
+
+# the 10x hdf5 file contains both data types
+inputdata.10x <- Read10X_h5("data/raw/filtered_feature_bc_matrix.h5")
+
+# extract RNA and ATAC data
+rna_counts <- inputdata.10x$`Gene Expression`
+atac_counts <- inputdata.10x$Peaks
+
+# Create Seurat object from RNA-seq counts
+ln <- CreateSeuratObject(counts = rna_counts, min.cells = 3)
+
+mito.genes <- c('ND1', 'ND2', 'COX1', 'COX2', 'ATP8', 'ATP6', 'COX3',
+                'ND3', 'ND4L', 'ND4', 'ND5', 'ND6', 'CYTB')
+
+ln[["percent.mt"]] <- PercentageFeatureSet(ln, features = mito.genes)
+
+## Add metadata
+pheno24 <- readxl::read_excel('data/raw/Multiome_Wetlab_data_July26_2024_ACS.xlsx') |>
+  dplyr::filter(Cohort == 'R37') |> 
+  dplyr::select(`Sample Number`, `Sample Name`) |> 
+  mutate(animal = gsub(' .*', '', `Sample Name`)) %>% 
+  mutate(timepoint = gsub('.* ', 'wk', `Sample Name`)) |> 
+  mutate(tissue = gsub('.* ', '', gsub(' week.*', '', `Sample Name`)))
+
+pheno23 <- readxl::read_excel('data/raw/Multiome_Wetlab_data_Feb06_2023.xlsx') |> 
+  dplyr::filter(Cohort == 'R37') |> 
+  dplyr::select(`Sample Number`, `Sample Name`) %>% 
+  mutate(animal = gsub(' .*', '', `Sample Name`)) %>% 
+  mutate(timepoint = gsub(' .*', '', gsub('.* wk ', 'wk', `Sample Name`))) %>% 
+  mutate(tissue = gsub('.* ', '', gsub(' wk.*', '', `Sample Name`)))  |> 
+  dplyr::filter(tissue == 'LN')
+  
+pheno <- pheno23 |> 
+  bind_rows(pheno24) |> 
+  mutate(`Sample Number` = sprintf("%03d", `Sample Number`)) |> 
+  left_join(aggr.id, by = c('Sample Number' = 'library_id'))
+
+ln@meta.data$barcode_id <- as.double(sub('.*-', '', colnames(ln)))
+
+meta.ln <- ln@meta.data %>% 
+  rownames_to_column('barcode') %>% 
+  left_join(pheno) |> 
+  left_join(metadata %>% dplyr::select(barcode, atac_peak_region_fragments,
+                                       atac_fragments)) %>% 
+  column_to_rownames('barcode')
+
+ln <- AddMetaData(ln, meta.ln)
+
+# Add in the ATAC-seq data
+# removing peaks that are in scaffolds (no standard chromosomes)
+grange.counts <- StringToGRanges(rownames(atac_counts), sep = c(":", "-"))
+grange.use <- seqnames(grange.counts) %in% standardChromosomes(grange.counts)
+atac_counts <- atac_counts[as.vector(grange.use), ]
+annotations <- GetGRangesFromEnsDb(ensdb = edb)
+seqlevelsStyle(annotations) <- 'NCBI'
+genome(annotations) <- "Mmul_10"
+
+frag.file <- "data/raw/atac_fragments.tsv.gz"
+chrom_assay <- CreateChromatinAssay(
+   counts = atac_counts,
+   sep = c(":", "-"),
+   genome = 'Mmul_10',
+   fragments = frag.file,
+   min.cells = 10,
+   annotation = annotations
+ )
+
+ln[["ATAC"]] <- chrom_assay
+
+ln <- NucleosomeSignal(ln, assay = 'ATAC')
+ln <- TSSEnrichment(object = ln, assay = 'ATAC')
+
+ln$pct_reads_in_peaks <- ln$atac_peak_region_fragments / ln$atac_fragments * 100
+#pbmc$blacklist_fraction <- FractionCountsInRegion(object = pbmc, assay = "ATAC",
+#                                                  regions = blacklist_hg38)
+
+### Save RDS before subseting
+#saveRDS(ln, 'data/processed/ln.multiome.rds')
+ln <- readRDS('data/processed/ln.multiome.rds')
+
+### Quality control RNA
+VlnPlot(ln, features = c("nCount_ATAC", "nCount_RNA","percent.mt"), ncol = 3,
+        log = TRUE, pt.size = 0) + NoLegend()
+
+VlnPlot(ln, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), ncol = 3,
+        log = TRUE, pt.size = 0) + NoLegend()
+
+VlnPlot(ln, features = c("nFeature_RNA"), group.by = 'Sample Name',
+        pt.size = 0) + NoLegend() + geom_hline(yintercept = 300)
+
+VlnPlot(ln, features = c("nCount_RNA"), ncol = 3,
+        log = TRUE, pt.size = 0) + NoLegend() + 
+  geom_hline(yintercept = c(500, 25000))
+
+VlnPlot(ln, features = c("nCount_ATAC"), ncol = 3,
+        log = TRUE, pt.size = 0) + NoLegend() + 
+  geom_hline(yintercept = c(1000, 70000))
+
+VlnPlot(ln, features = c("pct_reads_in_peaks"), group.by = 'Sample Name',
+        log = TRUE, pt.size = 0) + NoLegend() 
+
+RidgePlot(ln, features = c("nFeature_RNA"), group.by = 'Sample Number') + NoLegend()
+RidgePlot(ln, features = c("nCount_RNA"), group.by = 'Sample Number', log = T)  + NoLegend()
+RidgePlot(ln, features = c("percent.mt"), group.by = 'Sample Number') + NoLegend()
+
+RidgePlot(ln, features = c("nFeature_ATAC"), group.by = 'Sample Number') + NoLegend()
+RidgePlot(ln, features = c("nCount_ATAC"), group.by = 'Sample Number', log = T)  + NoLegend()
+
+### Quality control ATAC
+VlnPlot(ln, features = c('TSS.enrichment', 'nucleosome_signal'), pt.size = 0)
+
+RidgePlot(ln, features = c("TSS.enrichment"), group.by = 'Sample Number') + NoLegend()
+RidgePlot(ln, features = c("nucleosome_signal"), group.by = 'Sample Number') + NoLegend()
+
+TSSPlot(pbmc.ln, group.by = 'high.tss', assay = 'ATAC') + NoLegend()
+```
+
+```{r LN - Doublet removal and Peak calling}
+ln.nofilter <- readRDS('data/processed/ln.multiome.rds')
+
+## Filter out low quality cells and subset LN cells
+ln.raw <- subset(x = ln.nofilter,
+  subset = nCount_ATAC < 70000 &
+    nCount_ATAC > 1000 &
+    nCount_RNA < 25000 &
+    nCount_RNA > 500 &
+    nFeature_RNA > 300 &
+    percent.mt < 25 &
+    nucleosome_signal < 2 &
+    TSS.enrichment > 2 &
+    pct_reads_in_peaks > 20 &
+    tissue == 'LN'
+)
+
+## Doublet identification
+library(DoubletFinder)
+
+ln.raw.diet <- DietSeurat(ln.raw, assays = 'RNA')
+
+ln.raw.list <- SplitObject(ln.raw.diet, split.by = 'animal')
+
+ln.raw.list <- lapply(ln.raw.list, 
+                   function(x) {
+                     x <- NormalizeData(x) |> 
+                       FindVariableFeatures() |> 
+                       ScaleData() |> 
+                       RunPCA()
+                     x <- FindNeighbors(x, dims = 1:15)
+                     x <- FindClusters(x)
+                     x <- RunUMAP(x, dims = 1:15)
+                     
+                     sweep.res.list <- paramSweep(x, PCs = 1:15)
+                     sweep.res.nsclc <- summarizeSweep(sweep.res.list)
+                     bcmvn_nsclc <- find.pK(sweep.res.nsclc)
+                     
+                     pK <- bcmvn_nsclc %>% 
+                       dplyr::filter(BCmetric == max(BCmetric)) %>% 
+                       select(pK)
+                     pK <- as.numeric(as.character(pK[[1]]))
+                     
+                     annotations <- x@meta.data$seurat_clusters
+                     homotic.prop <- modelHomotypic(annotations)
+                     nExp_poi <- round(0.07*nrow(x@meta.data))
+                     nExp_poi.adj <- round(nExp_poi*(1-homotic.prop))
+                     
+                     doubletFinder(x, pK = pK, PCs = 1:15, nExp = nExp_poi.adj)})
+
+meta.data.list <- lapply(ln.raw.list, function(x) {
+  colnames(x@meta.data) <- sub('_0.25.*', '', colnames(x@meta.data))
+  return(x@meta.data)
+  })
+
+metadata.df <- bind_rows(meta.data.list)
+                      
+ln.raw <- AddMetaData(ln.raw, metadata.df)
+
+rm(ln.raw.list)
+rm(ln.raw.diet)
+gc()
+
+#saveRDS(ln.raw, 'data/processed/ln.raw.doublet_finder.rds')
+
+ln.singlet <- subset(ln.raw, subset = DF.classifications == 'Singlet')
+
+### Peak re-Calling
+DefaultAssay(ln.singlet) <- "ATAC"
+
+#Change location of 'fragments' in multiome Seurat file
+#Fragments(pbmc.ln.raw@assays$ATAC) <- NULL
+#fragments <- CreateFragmentObject(path = "atac_fragments.tsv.gz", 
+#                                  cells = colnames(pbmc.ln.raw), 
+#                                  validate.fragments = TRUE)
+#Fragments(pbmc.ln.raw@assays$ATAC) <- fragments
+
+# Call peaks using MACS2
+peaks <- CallPeaks(ln.singlet, macs2.path = '/Users/ftencat/opt/anaconda3/bin/macs2')
+
+# Remove peaks on nonstandard chromosomes 
+library(GenomeInfoDb)
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+
+# Save peaks file
+dir.create("data/processed/peaks")
+save(peaks, file = "data/processed/peaks/peaks.RData")
+
+# Quantify counts in each peak
+macs2_counts <- FeatureMatrix(
+  fragments = Fragments(ln.singlet),
+  features = peaks,
+  cells = colnames(ln.singlet)
+)
+
+library(AnnotationHub)
+ah <- AnnotationHub()
+qr <- query(ah, c("EnsDb", "mulatta", "109"))
+edb <- qr[[1]]
+annotations <- GetGRangesFromEnsDb(ensdb = edb)
+seqlevelsStyle(annotations) <- 'NCBI'
+genome(annotations) <- "Mmul_10"
+
+fragpath = "data/raw/atac_fragments.tsv.gz"
+
+# Create a new assay using the MACS2 peak set and add it to the pbmc object
+ln.singlet[["peaks"]] <- CreateChromatinAssay(
+  counts = macs2_counts,
+  fragments = fragpath,
+  annotation = annotations
+)
+
+DefaultAssay(ln.singlet) <- 'RNA'
+ln.singlet[['ATAC']] <- NULL
+saveRDS(ln.singlet, 'data/processed/ln.peak.recalling.rds')
+```
+
+```{r LN umap + cell type annotation}
+ln.singlet <- readRDS('data/processed/new/ln.peak.recalling.rds')
+
+#### GEX
+ln.singlet <- NormalizeData(ln.singlet) %>% 
+  FindVariableFeatures() %>% 
+  ScaleData() %>% 
+  RunPCA()
+
+ElbowPlot(ln.singlet)
+
+ln.singlet <- RunUMAP(ln.singlet, dims = 1:5, reduction.name = 'umap.rna', 
+              reduction.key = 'rnaUMAP_')
+
+### ATAC 
+DefaultAssay(ln.singlet) <- 'peaks'
+
+ln.singlet <- FindTopFeatures(ln.singlet, min.cutoff = 5) %>% 
+  RunTFIDF() %>% 
+  RunSVD()
+
+DepthCor(ln.singlet)
+
+ln.singlet <- RunUMAP(ln.singlet, reduction = 'lsi', dims = 2:10, 
+                           reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+
+DimPlot(ln.singlet)
+
+DimPlot(ln.singlet, group.by = 'animal', cols = 'glasbey')
+
+### WNN integration RNA + ATAC
+DefaultAssay(ln.singlet) <- 'RNA'
+
+ln.singlet <- FindMultiModalNeighbors(ln.singlet, reduction.list = list("pca", "lsi"), 
+                                dims.list = list(1:5, 2:10),
+                                verbose = TRUE)
+
+# Joint UMAP 
+ln.singlet <- RunUMAP(ln.singlet, nn.name = "weighted.nn", reduction.name = "wnn.umap",
+                reduction.key = "wnnUMAP_", verbose = TRUE)
+
+DimPlot(ln.singlet, reduction = 'wnn.umap')
+
+DimPlot(ln.singlet, reduction = 'wnn.umap', 
+        group.by = 'animal', 
+        cols = 'glasbey')
+
+DimPlot(ln.singlet, reduction = 'wnn.umap', 
+        group.by = 'animal', 
+        split.by = 'animal',
+        cols = 'glasbey', ncol = 4)
+
+FeaturePlot(ln.singlet, features = c('nCount_RNA', 'nFeature_RNA', 'percent.mt'), 
+            reduction = 'wnn.umap')
+
+## Cell type annotation
+# Azimuth
+library(Azimuth)
+library(SeuratData)
+
+ln.singlet <- RunAzimuth(ln.singlet, reference = "tonsilref")
+
+DimPlot(ln.singlet, group.by = 'predicted.celltype.l1', label = T,
+        label.box = T, repel = T, reduction = 'wnn.umap') + NoLegend()
+
+### Monaco
+library(SingleR)
+library(celldex)
+
+DefaultAssay(ln.singlet) <- 'RNA'
+ln.singlet.diet <- DietSeurat(object = ln.singlet, assays = "RNA")
+ln.se <- as.SingleCellExperiment(ln.singlet.diet)
+
+monaco.ref <- MonacoImmuneData()
+
+ln.monaco.label.main <- SingleR(test = ln.se, ref = monaco.ref, 
+                                assay.type.test = 1,
+                                labels = monaco.ref$label.main)
+
+ln.monaco.label.fine <- SingleR(test = ln.se, ref = monaco.ref, 
+                                assay.type.test = 1,
+                                labels = monaco.ref$label.fine)
+
+ln.singlet$singleR.label.main <- ln.monaco.label.main$labels
+ln.singlet$singleR.pruned.label.main <- ln.monaco.label.main$pruned.labels
+ln.singlet$singleR.label.fine <- ln.monaco.label.fine$labels
+ln.singlet$singleR.pruned.label.fine <- ln.monaco.label.fine$pruned.labels
+
+DimPlot(ln.singlet, group.by = 'singleR.label.fine', label = T,
+        label.box = T, repel = T, reduction = 'wnn.umap') + NoLegend()
+
+### Clustering and maker genes expression
+ln.singlet <- FindClusters(ln.singlet, graph.name = "wsnn", algorithm = 3, 
+                           resolution = 1, verbose = FALSE)
+
+DimPlot(ln.singlet, label = T, repel = T, reduction = 'wnn.umap') + NoLegend()
+
+
+t.cell.markers <- readxl::read_excel('data/raw/human.cell.surface.markers.xlsx',
+                                     sheet = 'human.t.cell.markers')
+
+cell.markers <- readxl::read_excel('data/raw/human.cell.surface.markers.xlsx',
+                                     sheet = 'human.cell.surface.markers')
+
+DotPlot(ln.singlet, 
+        features = c(unique(cell.markers$gene.symbol),
+                     "TBX21", "CXCR3", "IFNG", "CCR4", "GATA3", "PTGDR2", "IL4",
+                     "RORC", "IL17A", "CCR6", "FOXP3", "IL7R", "IL2RA", "TGFB1", "TGFB3",
+                     "BCL6", "CXCR5", "ICOS", "PDCD1", "IL21", "B3GAT1", "A4GALT", "CD38", "ICAM1"), 
+        cluster.idents = T, dot.min = 0.01, scale.by = 'size', assay = 'RNA') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_viridis_c(option = 'H')
+
+VlnPlot(ln.singlet, features = 'nFeature_RNA', group.by = 'seurat_clusters')
+
+### Remove cells from cluster 20 and recluster
+ln.singlet.filter <- subset(ln.singlet, subset = seurat_clusters != '20')
+
+# GEX
+ln.singlet.filter <- NormalizeData(ln.singlet.filter) %>% 
+  FindVariableFeatures() %>% 
+  ScaleData() %>% 
+  RunPCA()
+
+ln.singlet.filter <- RunUMAP(ln.singlet.filter, dims = 1:5, 
+                             reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
+
+# ATAC 
+DefaultAssay(ln.singlet.filter) <- 'peaks'
+
+ln.singlet.filter <- FindTopFeatures(ln.singlet.filter, min.cutoff = 5) %>% 
+  RunTFIDF() %>% 
+  RunSVD()
+
+ln.singlet.filter <- RunUMAP(ln.singlet.filter, reduction = 'lsi', dims = 2:10, 
+                           reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+
+### WNN integration RNA + ATAC
+DefaultAssay(ln.singlet.filter) <- 'RNA'
+
+ln.singlet.filter <- FindMultiModalNeighbors(ln.singlet.filter, 
+                                             reduction.list = list("pca", "lsi"), 
+                                             dims.list = list(1:5, 2:10),
+                                             verbose = TRUE)
+
+# Joint UMAP after remove cellls from cluster 20
+ln.singlet.filter <- RunUMAP(ln.singlet.filter, nn.name = "weighted.nn", 
+                             reduction.name = "wnn.umap", 
+                             reduction.key = "wnnUMAP_", verbose = TRUE)
+
+DimPlot(ln.singlet.filter, reduction = 'wnn.umap')
+
+DimPlot(ln.singlet.filter, reduction = 'wnn.umap', 
+        group.by = 'animal', 
+        cols = 'glasbey')
+
+## Recluster and marker genes expression
+ln.singlet.filter <- FindClusters(ln.singlet.filter, graph.name = "wsnn", algorithm = 3, 
+                           resolution = 1, verbose = FALSE)
+
+DimPlot(ln.singlet.filter, label = T, repel = T, reduction = 'wnn.umap') + NoLegend()
+
+cell.markers <- readxl::read_excel('data/raw/human.cell.surface.markers.xlsx',
+                                     sheet = 'human.cell.surface.markers')
+
+cluster.annot.plot <- DotPlot(ln.singlet.filter, 
+        features = c(unique(cell.markers$gene.symbol),
+                     "TBX21", "CXCR3", "IFNG", "CCR4", "GATA3", "PTGDR2", "IL4",
+                     "RORC", "IL17A", "CCR6", "FOXP3", "IL7R", "IL2RA", "TGFB1", "TGFB3",
+                     "BCL6", "CXCR5", "ICOS", "PDCD1", "IL21", "B3GAT1", "A4GALT", "CD38", "ICAM1"), 
+        cluster.idents = T, dot.min = 0.01, scale.by = 'size', assay = 'RNA') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9)) +
+  scale_color_viridis_c(option = 'H') + xlab('') + ylab('Cluster')
+
+ggsave('results/figures/new/dotplot_cluster_annotation_ln.pdf', cluster.annot.plot,
+       height = 5, width = 10.5)
+
+manual.annotation <- ln.singlet.filter@meta.data %>% 
+  mutate(manual.annotation = case_when(seurat_clusters %in% c(0, 1, 2) ~ 'CD4 T Naive',
+                                       seurat_clusters %in% c(5, 10) ~ 'CD8 T Naive',
+                                       seurat_clusters == 7 ~ 'CD8 T Eff/Mem',
+                                       seurat_clusters == 18 ~ 'NK',
+                                       seurat_clusters %in% c(8, 12, 13, 14, 
+                                                              15, 16, 17) ~ 'CD4 T Eff/Mem',
+                                       seurat_clusters == 21 ~ 'Cycling CD4/CD8',
+                                       seurat_clusters == 25 ~ 'pDC',
+                                       seurat_clusters == 20 ~ 'FDC',
+                                       seurat_clusters == 22 ~ 'Monocytes/Macrophages',
+                                       seurat_clusters %in% c(3, 4, 6, 9, 11) ~ 'B cells',
+                                       seurat_clusters == 24 ~ 'Plasma cells',
+                                       seurat_clusters %in% c(19, 23) ~ 'GC B cells'))
+
+ln.singlet.filter$manual.annotation <- manual.annotation$manual.annotation
+
+umap <- DimPlot(ln.singlet.filter, group.by = 'manual.annotation', label = T, repel = T,  
+        reduction = 'wnn.umap', label.size = 5) + NoLegend()
+
+#ggsave('results/figures/new/umap_ln_manual_annotation.png', umap,  dpi = 'retina',
+#       width = 7, height = 5.5)
+
+Idents(ln.obj) <- ln.obj$manual.annotation
+subset.annot.plot <- DotPlot(ln.obj, 
+        features = c(unique(cell.markers$gene.symbol)[-34],
+                     "TBX21", "CXCR3", "IFNG", "CCR4", "GATA3",  "IL4",
+                     "RORC", "IL17A", "CCR6", "FOXP3", "IL7R", "IL2RA", "TGFB1", 
+                     "TGFB3", "BCL6", "CXCR5", "ICOS", "PDCD1", "IL21", "B3GAT1", 
+                     "A4GALT", "CD38", "ICAM1"), 
+        cluster.idents = T, dot.min = 0.01, scale.by = 'size', assay = 'RNA') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9)) +
+  scale_color_viridis_c(option = 'H') + xlab('') + ylab('Subset')
+
+ggsave('results/figures/new/dotplot_cluster_annotation_ln.pdf', 
+       subset.annot.plot, height = 4, width = 12.5)
+
+
+
+
+
+
+#saveRDS(ln.singlet.filter, 'data/processed/new/ln.integrated_annot.rds')
+#ln.singlet.filter <- readRDS('data/processed/new/ln.integrated_annot.rds')
+
+### Estimate gene activity from ATAC-seq
+ln.obj <- readRDS('data/processed/new/ln.integrated_annot.rds')
+
+DefaultAssay(ln.obj) <- 'peaks'
+
+gene.activities <- GeneActivity(ln.obj, assay = 'peaks')
+
+ln.obj[['gene.activity']] <- CreateAssayObject(counts = gene.activities)
+ln.obj <- NormalizeData(
+  object = ln.obj,
+  assay = 'gene.activity',
+  normalization.method = 'LogNormalize',
+  scale.factor = median(ln.obj$nCount_gene.activity)
+)
+
+#saveRDS(ln.obj, 'data/processed/new/ln.integrated_annot_geneactivity.rds')
+
+#### ChromVar
+library(JASPAR2020)
+library(TFBSTools)
+library(AnnotationHub)
+
+ah <- AnnotationHub()
+qrz <- query(ah, c( "mulatta"))
+qr <- query(ah, c("EnsDb", "mulatta", "109"))
+edb <- qr[[1]]
+
+DefaultAssay(ln.obj) <- 'peaks'
+ 
+pfm <- getMatrixSet(x = JASPAR2020,
+                    opts = list(collection = "CORE", tax_group = 'vertebrates', 
+                                all_versions = FALSE))
+
+library(BSgenome.Mmulatta.UCSC.rheMac10)
+seqnames(Mmulatta) <- sub('chr', '', seqnames(Mmulatta))
+
+ln.obj <- AddMotifs(object = ln.obj, genome = Mmulatta, pfm = pfm)
+
+ln.obj <- RunChromVAR(object = ln.obj, genome = Mmulatta)
+
+DefaultAssay(ln.obj) <- 'chromvar'
+
+FeaturePlot(ln.obj, reduction = 'wnn.umap',
+            features = c('MA0772.1', 'MA0137.3', 'MA0769.2'), 
+            max.cutoff = 'q95', min.cutoff = 'q1')
+
+DefaultAssay(ln.obj) <- 'RNA'
+#saveRDS(ln.obj, 'data/processed/new/ln.integrated.annot.geneactivity.chromvar.rds')
+```
