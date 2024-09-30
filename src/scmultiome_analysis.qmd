@@ -126,41 +126,37 @@ ln$pct_reads_in_peaks <- ln$atac_peak_region_fragments / ln$atac_fragments * 100
 #saveRDS(ln, 'data/processed/ln.multiome.rds')
 ln <- readRDS('data/processed/ln.multiome.rds')
 
-### Quality control RNA
-VlnPlot(ln, features = c("nCount_ATAC", "nCount_RNA","percent.mt"), ncol = 3,
-        log = TRUE, pt.size = 0) + NoLegend()
+### Quality control
+p.ncountrna <- VlnPlot(ln.nofilter, features = c("nCount_RNA"), 
+        log = TRUE, pt.size = 0, group.by = 'animal' ) + NoLegend() + 
+  geom_hline(yintercept = c(500, 25000), linetype = 2)
 
-VlnPlot(ln, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), ncol = 3,
-        log = TRUE, pt.size = 0) + NoLegend()
+#ggsave('results/figures/violion_plot_nCount_RNA.pdf', p.ncountrna, scale = 0.6)
 
-VlnPlot(ln, features = c("nFeature_RNA"), group.by = 'Sample Name',
-        pt.size = 0) + NoLegend() + geom_hline(yintercept = 300)
+p.nfeaturerna <- VlnPlot(ln.nofilter, features = c("nFeature_RNA"), 
+        log = TRUE, pt.size = 0, group.by = 'animal' ) + NoLegend() + 
+  geom_hline(yintercept = 300, linetype = 2)
 
-VlnPlot(ln, features = c("nCount_RNA"), ncol = 3,
-        log = TRUE, pt.size = 0) + NoLegend() + 
-  geom_hline(yintercept = c(500, 25000))
+#ggsave('results/figures/violion_plot_nFeature_RNA.pdf', p.nfeaturerna, scale = 0.6)
 
-VlnPlot(ln, features = c("nCount_ATAC"), ncol = 3,
-        log = TRUE, pt.size = 0) + NoLegend() + 
-  geom_hline(yintercept = c(1000, 70000))
+p.percentmt <-VlnPlot(ln.nofilter, features = c("percent.mt"), 
+        pt.size = 0, group.by = 'animal' ) + NoLegend() + 
+  geom_hline(yintercept = 25, linetype = 2)
 
-VlnPlot(ln, features = c("pct_reads_in_peaks"), group.by = 'Sample Name',
-        log = TRUE, pt.size = 0) + NoLegend() 
+#ggsave('results/figures/violion_plot_percent.mt.pdf', p.percentmt, scale = 0.6)
 
-RidgePlot(ln, features = c("nFeature_RNA"), group.by = 'Sample Number') + NoLegend()
-RidgePlot(ln, features = c("nCount_RNA"), group.by = 'Sample Number', log = T)  + NoLegend()
-RidgePlot(ln, features = c("percent.mt"), group.by = 'Sample Number') + NoLegend()
+p.ncountatac <-VlnPlot(ln.nofilter, features = c("nCount_ATAC"),
+        log = TRUE, pt.size = 0, group.by = 'animal') + NoLegend() + 
+  geom_hline(yintercept = c(1000, 70000), linetype = 2)
 
-RidgePlot(ln, features = c("nFeature_ATAC"), group.by = 'Sample Number') + NoLegend()
-RidgePlot(ln, features = c("nCount_ATAC"), group.by = 'Sample Number', log = T)  + NoLegend()
+#ggsave('results/figures/violion_plot_nCount_ATAC.pdf', p.ncountatac, scale = 0.6)
 
-### Quality control ATAC
-VlnPlot(ln, features = c('TSS.enrichment', 'nucleosome_signal'), pt.size = 0)
+p.pctreadpeaks <-VlnPlot(ln.nofilter, features = c("pct_reads_in_peaks"),
+        log = TRUE, pt.size = 0, group.by = 'animal') + NoLegend() + 
+  geom_hline(yintercept = 20, linetype = 2)
 
-RidgePlot(ln, features = c("TSS.enrichment"), group.by = 'Sample Number') + NoLegend()
-RidgePlot(ln, features = c("nucleosome_signal"), group.by = 'Sample Number') + NoLegend()
-
-TSSPlot(pbmc.ln, group.by = 'high.tss', assay = 'ATAC') + NoLegend()
+#ggsave('results/figures/violion_plot_pct_reads_in_peaks.pdf', 
+#       p.pctreadpeaks, scale = 0.6)
 ```
 
 ```{r LN - Doublet removal and Peak calling}
@@ -277,11 +273,31 @@ ln.singlet[["peaks"]] <- CreateChromatinAssay(
 
 DefaultAssay(ln.singlet) <- 'RNA'
 ln.singlet[['ATAC']] <- NULL
-saveRDS(ln.singlet, 'data/processed/ln.peak.recalling.rds')
+#saveRDS(ln.singlet, 'data/processed/ln.peak.recalling.rds')
 ```
 
 ```{r LN umap + cell type annotation}
-ln.singlet <- readRDS('data/processed/new/ln.peak.recalling.rds')
+ln.singlet <- readRDS('data/processed/ln.peak.recalling.rds')
+
+#count.matrix <- GetAssayData(ln.singlet, assay = 'RNA', layer = 'counts')
+#write.csv(count.matrix, 'data/processed/raw_count_matrix.csv')
+
+readout.df <- read_tsv('data/raw/viral_readouts_wk24_postati.tsv') |> 
+  dplyr::rename(`log_VL_wk36_posttx` = log_VL,
+                `LOG_SIVRNA_LN_per10^6correctedCD4Live_wk36_posttx` = 
+                  `LOG_SIVRNA_LN_per10^6correctedCD4Live`,
+                `LOG_SIV/DNA_LN_per10^6correctedCD4Live_wk36_posttx` = 
+                  `LOG_SIV/DNA_LN_per10^6correctedCD4Live`) |> 
+  select(animal, group, `log_VL_wk36_posttx`,
+         `LOG_SIVRNA_LN_per10^6correctedCD4Live_wk36_posttx`,
+         `LOG_SIV/DNA_LN_per10^6correctedCD4Live_wk36_posttx`)
+
+meta <- ln.singlet@meta.data |> 
+  rownames_to_column('barcode') |> 
+  left_join(readout.df) |> 
+  column_to_rownames('barcode')
+
+ln.singlet <- AddMetaData(ln.singlet, meta)
 
 #### GEX
 ln.singlet <- NormalizeData(ln.singlet) %>% 
@@ -289,9 +305,9 @@ ln.singlet <- NormalizeData(ln.singlet) %>%
   ScaleData() %>% 
   RunPCA()
 
-ElbowPlot(ln.singlet)
+ElbowPlot(ln.singlet, ndims = 50)
 
-ln.singlet <- RunUMAP(ln.singlet, dims = 1:5, reduction.name = 'umap.rna', 
+ln.singlet <- RunUMAP(ln.singlet, dims = 1:10, reduction.name = 'umap.rna', 
               reduction.key = 'rnaUMAP_')
 
 ### ATAC 
@@ -304,22 +320,25 @@ ln.singlet <- FindTopFeatures(ln.singlet, min.cutoff = 5) %>%
 DepthCor(ln.singlet)
 
 ln.singlet <- RunUMAP(ln.singlet, reduction = 'lsi', dims = 2:10, 
-                           reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+                      reduction.name = "umap.atac", reduction.key = "atacUMAP_")
 
 DimPlot(ln.singlet)
 
 DimPlot(ln.singlet, group.by = 'animal', cols = 'glasbey')
+DimPlot(ln.singlet, group.by = 'group', split.by = 'group')
 
 ### WNN integration RNA + ATAC
 DefaultAssay(ln.singlet) <- 'RNA'
 
-ln.singlet <- FindMultiModalNeighbors(ln.singlet, reduction.list = list("pca", "lsi"), 
-                                dims.list = list(1:5, 2:10),
-                                verbose = TRUE)
+ln.singlet <- FindMultiModalNeighbors(ln.singlet, 
+                                      reduction.list = list("pca", "lsi"), 
+                                      dims.list = list(1:10, 2:10),
+                                      verbose = TRUE)
 
 # Joint UMAP 
-ln.singlet <- RunUMAP(ln.singlet, nn.name = "weighted.nn", reduction.name = "wnn.umap",
-                reduction.key = "wnnUMAP_", verbose = TRUE)
+ln.singlet <- RunUMAP(ln.singlet, nn.name = "weighted.nn", 
+                      reduction.name = "wnn.umap",
+                      reduction.key = "wnnUMAP_", verbose = TRUE)
 
 DimPlot(ln.singlet, reduction = 'wnn.umap')
 
@@ -371,137 +390,64 @@ ln.singlet$singleR.pruned.label.fine <- ln.monaco.label.fine$pruned.labels
 DimPlot(ln.singlet, group.by = 'singleR.label.fine', label = T,
         label.box = T, repel = T, reduction = 'wnn.umap') + NoLegend()
 
-### Clustering and maker genes expression
-ln.singlet <- FindClusters(ln.singlet, graph.name = "wsnn", algorithm = 3, 
-                           resolution = 1, verbose = FALSE)
+# CellTypist
+celltypist.annot <- read_csv('data/processed/celltypist_predictions/predicted_labels.csv')
+
+meta.celltypist.annot <- celltypist.annot |> 
+  mutate(`...1` = sub('\\.', '-', `...1`)) |> 
+  column_to_rownames('...1') |> 
+  dplyr::rename(celltypist_predicted_labels  = predicted_labels,
+                celltypist_majority_voting = majority_voting) |> 
+  select(-over_clustering)
+
+ln.singlet <- AddMetaData(ln.singlet, meta.celltypist.annot)
+
+#saveRDS(ln.singlet, 'data/processed/ln.annot.rds')
+ln.singlet <- readRDS('data/processed/ln.annot.rds')
+```
+
+```{r}
+ln.singlet <- readRDS('data/processed/ln.annot.rds')
+
+ln.singlet <- FindClusters(ln.singlet, graph.name = "wsnn", algorithm = 4, 
+                           resolution = 0.4, verbose = FALSE)
 
 DimPlot(ln.singlet, label = T, repel = T, reduction = 'wnn.umap') + NoLegend()
 
+DimPlot(ln.singlet, reduction = 'wnn.umap', group.by = 'predicted.celltype.l1',
+        label = T, repel = T) + NoLegend()
 
-t.cell.markers <- readxl::read_excel('data/raw/human.cell.surface.markers.xlsx',
-                                     sheet = 'human.t.cell.markers')
+DimPlot(ln.singlet, reduction = 'wnn.umap', group.by = 'celltypist_predicted_labels',
+        label = T, repel = T) + NoLegend()
 
-cell.markers <- readxl::read_excel('data/raw/human.cell.surface.markers.xlsx',
-                                     sheet = 'human.cell.surface.markers')
+DimPlot(ln.singlet, reduction = 'wnn.umap', group.by = 'singleR.label.fine',
+        label = T, repel = T) + NoLegend()
 
-DotPlot(ln.singlet, 
-        features = c(unique(cell.markers$gene.symbol),
-                     "TBX21", "CXCR3", "IFNG", "CCR4", "GATA3", "PTGDR2", "IL4",
-                     "RORC", "IL17A", "CCR6", "FOXP3", "IL7R", "IL2RA", "TGFB1", "TGFB3",
-                     "BCL6", "CXCR5", "ICOS", "PDCD1", "IL21", "B3GAT1", "A4GALT", "CD38", "ICAM1"), 
+p.markers <- FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
+            features = c('PTPRC', 'CD3E', 'CD4', 'CD8A', 
+                         'CD19', 'ITGAM', 'CD163'), max.cutoff = 'q90', 
+            cols = c('lightgrey', 'darkred'), raster = F)
+
+ggsave('results/figures/umap_pan_markers.png', p.markers, dpi = 'retina', scale = 1.2)
+
+FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
+            features = c('GPBAR1','NR1H4', 'VDR', 'IL7R', 'IL2RA',
+                         'FOXP3', 'CXCR5', 'ICOS'), max.cutoff = 'q90')
+
+bars.geneSymbols <- c('GPBAR1', 'S1PR2', 'ITGA5', 'SLC10A1', 'SLC10A2', 
+                      'SLCO1A2', 'ABCC2', 'ABCC3', 'ABCC4', 'ABCB11', 'CHRM2', 'CHRM3', 
+                      'NR1H2', 'NR1H4', 'NR1I2', 'NR1I3', 'NR3C1', 'NR3C2', 
+                      'NR4A1', 'VDR', 'RORC')
+
+DotPlot(ln.singlet, group.by = 'celltypist_majority_voting',
+        features = bars.geneSymbols, 
         cluster.idents = T, dot.min = 0.01, scale.by = 'size', assay = 'RNA') +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   scale_color_viridis_c(option = 'H')
 
-VlnPlot(ln.singlet, features = 'nFeature_RNA', group.by = 'seurat_clusters')
+```
 
-### Remove cells from cluster 20 and recluster
-ln.singlet.filter <- subset(ln.singlet, subset = seurat_clusters != '20')
-
-# GEX
-ln.singlet.filter <- NormalizeData(ln.singlet.filter) %>% 
-  FindVariableFeatures() %>% 
-  ScaleData() %>% 
-  RunPCA()
-
-ln.singlet.filter <- RunUMAP(ln.singlet.filter, dims = 1:5, 
-                             reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
-
-# ATAC 
-DefaultAssay(ln.singlet.filter) <- 'peaks'
-
-ln.singlet.filter <- FindTopFeatures(ln.singlet.filter, min.cutoff = 5) %>% 
-  RunTFIDF() %>% 
-  RunSVD()
-
-ln.singlet.filter <- RunUMAP(ln.singlet.filter, reduction = 'lsi', dims = 2:10, 
-                           reduction.name = "umap.atac", reduction.key = "atacUMAP_")
-
-### WNN integration RNA + ATAC
-DefaultAssay(ln.singlet.filter) <- 'RNA'
-
-ln.singlet.filter <- FindMultiModalNeighbors(ln.singlet.filter, 
-                                             reduction.list = list("pca", "lsi"), 
-                                             dims.list = list(1:5, 2:10),
-                                             verbose = TRUE)
-
-# Joint UMAP after remove cellls from cluster 20
-ln.singlet.filter <- RunUMAP(ln.singlet.filter, nn.name = "weighted.nn", 
-                             reduction.name = "wnn.umap", 
-                             reduction.key = "wnnUMAP_", verbose = TRUE)
-
-DimPlot(ln.singlet.filter, reduction = 'wnn.umap')
-
-DimPlot(ln.singlet.filter, reduction = 'wnn.umap', 
-        group.by = 'animal', 
-        cols = 'glasbey')
-
-## Recluster and marker genes expression
-ln.singlet.filter <- FindClusters(ln.singlet.filter, graph.name = "wsnn", algorithm = 3, 
-                           resolution = 1, verbose = FALSE)
-
-DimPlot(ln.singlet.filter, label = T, repel = T, reduction = 'wnn.umap') + NoLegend()
-
-cell.markers <- readxl::read_excel('data/raw/human.cell.surface.markers.xlsx',
-                                     sheet = 'human.cell.surface.markers')
-
-cluster.annot.plot <- DotPlot(ln.singlet.filter, 
-        features = c(unique(cell.markers$gene.symbol),
-                     "TBX21", "CXCR3", "IFNG", "CCR4", "GATA3", "PTGDR2", "IL4",
-                     "RORC", "IL17A", "CCR6", "FOXP3", "IL7R", "IL2RA", "TGFB1", "TGFB3",
-                     "BCL6", "CXCR5", "ICOS", "PDCD1", "IL21", "B3GAT1", "A4GALT", "CD38", "ICAM1"), 
-        cluster.idents = T, dot.min = 0.01, scale.by = 'size', assay = 'RNA') +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9)) +
-  scale_color_viridis_c(option = 'H') + xlab('') + ylab('Cluster')
-
-ggsave('results/figures/new/dotplot_cluster_annotation_ln.pdf', cluster.annot.plot,
-       height = 5, width = 10.5)
-
-manual.annotation <- ln.singlet.filter@meta.data %>% 
-  mutate(manual.annotation = case_when(seurat_clusters %in% c(0, 1, 2) ~ 'CD4 T Naive',
-                                       seurat_clusters %in% c(5, 10) ~ 'CD8 T Naive',
-                                       seurat_clusters == 7 ~ 'CD8 T Eff/Mem',
-                                       seurat_clusters == 18 ~ 'NK',
-                                       seurat_clusters %in% c(8, 12, 13, 14, 
-                                                              15, 16, 17) ~ 'CD4 T Eff/Mem',
-                                       seurat_clusters == 21 ~ 'Cycling CD4/CD8',
-                                       seurat_clusters == 25 ~ 'pDC',
-                                       seurat_clusters == 20 ~ 'FDC',
-                                       seurat_clusters == 22 ~ 'Monocytes/Macrophages',
-                                       seurat_clusters %in% c(3, 4, 6, 9, 11) ~ 'B cells',
-                                       seurat_clusters == 24 ~ 'Plasma cells',
-                                       seurat_clusters %in% c(19, 23) ~ 'GC B cells'))
-
-ln.singlet.filter$manual.annotation <- manual.annotation$manual.annotation
-
-umap <- DimPlot(ln.singlet.filter, group.by = 'manual.annotation', label = T, repel = T,  
-        reduction = 'wnn.umap', label.size = 5) + NoLegend()
-
-#ggsave('results/figures/new/umap_ln_manual_annotation.png', umap,  dpi = 'retina',
-#       width = 7, height = 5.5)
-
-Idents(ln.obj) <- ln.obj$manual.annotation
-subset.annot.plot <- DotPlot(ln.obj, 
-        features = c(unique(cell.markers$gene.symbol)[-34],
-                     "TBX21", "CXCR3", "IFNG", "CCR4", "GATA3",  "IL4",
-                     "RORC", "IL17A", "CCR6", "FOXP3", "IL7R", "IL2RA", "TGFB1", 
-                     "TGFB3", "BCL6", "CXCR5", "ICOS", "PDCD1", "IL21", "B3GAT1", 
-                     "A4GALT", "CD38", "ICAM1"), 
-        cluster.idents = T, dot.min = 0.01, scale.by = 'size', assay = 'RNA') +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9)) +
-  scale_color_viridis_c(option = 'H') + xlab('') + ylab('Subset')
-
-ggsave('results/figures/new/dotplot_cluster_annotation_ln.pdf', 
-       subset.annot.plot, height = 4, width = 12.5)
-
-
-
-
-
-
-#saveRDS(ln.singlet.filter, 'data/processed/new/ln.integrated_annot.rds')
-#ln.singlet.filter <- readRDS('data/processed/new/ln.integrated_annot.rds')
-
+```{r ATAC Gene activity & Chromvar}
 ### Estimate gene activity from ATAC-seq
 ln.obj <- readRDS('data/processed/new/ln.integrated_annot.rds')
 
@@ -551,3 +497,4 @@ FeaturePlot(ln.obj, reduction = 'wnn.umap',
 DefaultAssay(ln.obj) <- 'RNA'
 #saveRDS(ln.obj, 'data/processed/new/ln.integrated.annot.geneactivity.chromvar.rds')
 ```
+
