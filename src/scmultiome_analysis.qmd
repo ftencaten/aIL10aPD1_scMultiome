@@ -437,12 +437,10 @@ ilc.markers <- FeaturePlot(ln.singlet, reduction = 'wnn.umap',
 #ggsave('results/figures/umap_ilc_markers.png', ilc.markers, dpi = 'retina', scale = 1.2)
 
 receptor.p <- FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
-            features = c('GPBAR1','NR1H4', 'VDR'), max.cutoff = 'q80',
-            min.cutoff = 'q01',
-            cols = c('lightgrey', 'red'), ncol = 3, pt.size = 1.5)
+            features = c('GPBAR1','CHRM3','NR1H4', 'VDR'), max.cutoff = 'q80',
+            cols = c('lightgrey', 'red'), raster = F)
 
-#ggsave('results/figures/umap_tgr5_fxr_vdr.png', receptor.p, dpi = 'retina', 
-#       width = 8, height = 2.5)
+#ggsave('results/figures/umap_tgr5_chrm3_fxr_vdr.png', receptor.p, dpi = 'retina')
 
 bars.geneSymbols <- c('GPBAR1', 'S1PR2', 'ITGA5', 'SLC10A1', 'SLC10A2', 
                       'SLCO1A2', 'ABCC2', 'ABCC3', 'ABCC4', 'ABCB11', 'CHRM2', 'CHRM3', 
@@ -507,7 +505,90 @@ pca.p <- plotPCA(vsd, intgroup = 'group') + geom_label_repel(aes(label = name))
 
 ggsave('results/figures/pca_aggregate_counts.pdf', pca.p)
 
-## Differential expression analysis
+### Differential expression analysis
+# Cell markers
+Idents(ln.singlet) <- ln.singlet$singleR.label.fine
+cell.markers <- FindAllMarkers(ln.singlet, only.pos = T, logfc.threshold = 0.25)
+#write_tsv(cell.markers, 'results/cell_markers_findallmarkers_logfc0.25.tsv')
+cell.markers <- FindAllMarkers(ln.singlet, only.pos = T, logfc.threshold = 1)
+#write_tsv(cell.markers, 'results/cell_markers_findallmarkers_logfc1.tsv')
+
+# MAST
+diet.obj <- DietSeurat(ln.singlet, assays = 'RNA')
+
+obj <- subset(diet.obj, singleR.label.fine == 'Myeloid dendritic cells')
+
+# create a MAST object
+sce <- as.SingleCellExperiment(obj)
+sca <- SceToSingleCellAssay(sce, class = "SingleCellAssay")
+
+# keep genes that are expressed in more than 5% of all cells
+sca <- sca[freq(sca)>0.05,]
+
+# add a column to the data which contains scaled number of genes that are expressed in each cell
+cdr2 <- colSums(assay(sca)>0)
+colData(sca)$ngeneson <- scale(cdr2)
+
+# same for donors (which we need to model random effects)
+replicate <- factor(colData(sca)$animal)
+colData(sca)$replicate <- replicate
+
+# create a group per condition-celltype combination
+colData(sca)$group <- factor(colData(sca)$group)
+colData(sca)$group <- relevel(colData(sca)$group, "aIL10+aPD1")
+
+# define and fit the model
+zlmCond <- zlm(formula = ~ ngeneson + group + (1 | replicate), 
+               sca = sca, method = 'glmer', ebayes = F, 
+               strictConvergence = F, fitArgsD = list(nAGQ = 0))
+
+## Control
+# perform likelihood-ratio test for the condition that we are interested in    
+summaryCond.Control <- summary(zlmCond, doLRT='groupControl')
+
+# get the table with log-fold changes and p-values
+summaryDt.Control <- summaryCond.Control$datatable
+result.Control <- merge(summaryDt.Control[contrast=='groupControl' & component=='H',
+                          .(primerid, `Pr(>Chisq)`)], # p-values
+                summaryDt.Control[contrast=='groupControl' & component=='logFC',
+                          .(primerid, coef)],
+                by='primerid') # logFC coefficients
+
+# MAST uses natural logarithm so we convert the coefficients to log2 base to be comparable to edgeR
+result.Control[,coef:=result.Control[,coef]/log(2)]
+# do multiple testing correction
+result.Control[,FDR:=p.adjust(`Pr(>Chisq)`, 'fdr')]
+result.Control = result.Control[result.Control$FDR<Inf,, drop=F]
+
+result.Control <- stats::na.omit(as.data.frame(result.Control))
+
+## aIL10
+# perform likelihood-ratio test for the condition that we are interested in    
+summaryCond.aIL10 <- summary(zlmCond, doLRT='groupaIL10')
+
+# get the table with log-fold changes and p-values
+summaryDt.aIL10 <- summaryCond.aIL10$datatable
+result.aIL10 <- merge(summaryDt.aIL10[contrast=='groupaIL10' & component=='H',
+                          .(primerid, `Pr(>Chisq)`)], # p-values
+                summaryDt.aIL10[contrast=='groupaIL10' & component=='logFC',
+                          .(primerid, coef)],
+                by='primerid') # logFC coefficients
+
+# MAST uses natural logarithm so we convert the coefficients to log2 base to be comparable to edgeR
+result.aIL10[,coef:=result.aIL10[,coef]/log(2)]
+# do multiple testing correction
+result.aIL10[,FDR:=p.adjust(`Pr(>Chisq)`, 'fdr')]
+result.aIL10 = result.aIL10[result.aIL10$FDR<Inf,, drop=F]
+
+result.aIL10 <- stats::na.omit(as.data.frame(result.aIL10))
+
+result.out <- result.aIL10 |>
+  mutate(group = 'aIL10') |> 
+  bind_rows(result.Control |> mutate(group = 'Control'))
+
+return(result.out)
+
+### Pseudobulk aggregation
 pseudo <- AggregateExpression(ln.singlet, assays = "RNA", return.seurat = T, 
                               group.by = c("group", "animal", "singleR.label.fine"))
 
