@@ -310,6 +310,10 @@ ElbowPlot(ln.singlet, ndims = 50)
 ln.singlet <- RunUMAP(ln.singlet, dims = 1:10, reduction.name = 'umap.rna', 
               reduction.key = 'rnaUMAP_')
 
+rna.umap <- DimPlot(ln.singlet, group.by = 'animal', raster = F)
+
+#ggsave('results/figures/umap_rna.png', rna.umap, scale = 0.7, dpi = 'retina')
+
 ### ATAC 
 DefaultAssay(ln.singlet) <- 'peaks'
 
@@ -322,10 +326,9 @@ DepthCor(ln.singlet)
 ln.singlet <- RunUMAP(ln.singlet, reduction = 'lsi', dims = 2:10, 
                       reduction.name = "umap.atac", reduction.key = "atacUMAP_")
 
-DimPlot(ln.singlet)
+atac.umap <- DimPlot(ln.singlet, group.by = 'animal', raster = F)
 
-DimPlot(ln.singlet, group.by = 'animal', cols = 'glasbey')
-DimPlot(ln.singlet, group.by = 'group', split.by = 'group')
+#ggsave('results/figures/umap_atac.png', atac.umap, scale = 0.7, dpi = 'retina')
 
 ### WNN integration RNA + ATAC
 DefaultAssay(ln.singlet) <- 'RNA'
@@ -340,19 +343,16 @@ ln.singlet <- RunUMAP(ln.singlet, nn.name = "weighted.nn",
                       reduction.name = "wnn.umap",
                       reduction.key = "wnnUMAP_", verbose = TRUE)
 
-DimPlot(ln.singlet, reduction = 'wnn.umap')
+wnn.umap <- DimPlot(ln.singlet, group.by = 'animal', raster = F, reduction = 'wnn.umap')
+#ggsave('results/figures/umap_wnn.png', wnn.umap, scale = 0.7, dpi = 'retina')
 
-DimPlot(ln.singlet, reduction = 'wnn.umap', 
-        group.by = 'animal', 
-        cols = 'glasbey')
+wnn.umap.split <- DimPlot(ln.singlet, group.by = 'animal', split.by = 'animal',
+                          raster = F, reduction = 'wnn.umap', ncol = 7)
+#ggsave('results/figures/umap_wnn_split.png', wnn.umap.split ,  dpi = 'retina')
 
-DimPlot(ln.singlet, reduction = 'wnn.umap', 
-        group.by = 'animal', 
-        split.by = 'animal',
-        cols = 'glasbey', ncol = 4)
-
-FeaturePlot(ln.singlet, features = c('nCount_RNA', 'nFeature_RNA', 'percent.mt'), 
-            reduction = 'wnn.umap')
+wnn.umap.split.group <- DimPlot(ln.singlet, group.by = 'group', split.by = 'group',
+                                raster = F, reduction = 'wnn.umap', ncol = 3)
+#ggsave('results/figures/umap_wnn_split_group.png', wnn.umap.split.group ,  dpi = 'retina')
 
 ## Cell type annotation
 # Azimuth
@@ -423,28 +423,107 @@ DimPlot(ln.singlet, reduction = 'wnn.umap', group.by = 'celltypist_predicted_lab
 DimPlot(ln.singlet, reduction = 'wnn.umap', group.by = 'singleR.label.fine',
         label = T, repel = T) + NoLegend()
 
-p.markers <- FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
-            features = c('PTPRC', 'CD3E', 'CD4', 'CD8A', 
-                         'CD19', 'ITGAM', 'CD163'), max.cutoff = 'q90', 
-            cols = c('lightgrey', 'darkred'), raster = F)
+pan.markers <- FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
+                         features = c('PTPRC', 'CD3E', 'CD4', 'CD8A', 'CD19', 
+                                      'ITGAM', 'CD163', 'CLEC4C', 'ITGAX'), raster = F,
+                         max.cutoff = 'q90', cols = c('lightgrey', 'darkred'))
 
-ggsave('results/figures/umap_pan_markers.png', p.markers, dpi = 'retina', scale = 1.2)
+#ggsave('results/figures/umap_pan_markers.png', pan.markers, dpi = 'retina', scale = 1.2)
 
-FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
-            features = c('GPBAR1','NR1H4', 'VDR', 'IL7R', 'IL2RA',
-                         'FOXP3', 'CXCR5', 'ICOS'), max.cutoff = 'q90')
+ilc.markers <- FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
+                         features = c('NCAM1', 'KIT', 'IL7R'), raster = F,
+                         max.cutoff = 'q90', cols = c('lightgrey', 'darkred'))
+
+#ggsave('results/figures/umap_ilc_markers.png', ilc.markers, dpi = 'retina', scale = 1.2)
+
+receptor.p <- FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
+            features = c('GPBAR1','NR1H4', 'VDR'), max.cutoff = 'q80',
+            min.cutoff = 'q01',
+            cols = c('lightgrey', 'red'), ncol = 3, pt.size = 1.5)
+
+#ggsave('results/figures/umap_tgr5_fxr_vdr.png', receptor.p, dpi = 'retina', 
+#       width = 8, height = 2.5)
 
 bars.geneSymbols <- c('GPBAR1', 'S1PR2', 'ITGA5', 'SLC10A1', 'SLC10A2', 
                       'SLCO1A2', 'ABCC2', 'ABCC3', 'ABCC4', 'ABCB11', 'CHRM2', 'CHRM3', 
                       'NR1H2', 'NR1H4', 'NR1I2', 'NR1I3', 'NR3C1', 'NR3C2', 
                       'NR4A1', 'VDR', 'RORC')
 
-DotPlot(ln.singlet, group.by = 'celltypist_majority_voting',
+bar.dotplot <- DotPlot(ln.singlet, group.by = 'singleR.label.fine',
         features = bars.geneSymbols, 
         cluster.idents = T, dot.min = 0.01, scale.by = 'size', assay = 'RNA') +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   scale_color_viridis_c(option = 'H')
 
+#ggsave('results/figures/dotplot_bars.pdf', bar.dotplot, scale = 0.9)
+
+ FeaturePlot(ln.singlet, reduction = 'wnn.umap', 
+            features = c('ISG15'), max.cutoff = 'q80', split.by = 'group',
+            cols = c('lightgrey', 'red'), ncol = 3)
+ 
+#### Cell frequencies
+cell.freq <- ln.singlet@meta.data %>% 
+  filter(!(singleR.label.fine %in% c('Low-density basophils', 'Progenitor cells',
+                                   'Non classical monocytes', 'Intermediate monocytes',
+                                   'Terminal effector CD8 T cells'))) |> 
+  group_by(animal, group) %>% 
+  count(singleR.label.fine) |> 
+  group_by(animal) %>% 
+  mutate(freq = n/sum(n)) 
+
+cell.freq.stat <- cell.freq %>% 
+  group_by(singleR.label.fine) %>% 
+  wilcox_test(freq ~ group) %>% 
+  adjust_pvalue(p.col = 'p', method = 'BH')
+
+cell.freq %>% 
+  ggplot(aes(x = siv.dna.group, y = freq*100)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point() +
+  facet_wrap(~manual.annotation.fine, scales = 'free_y')
+ 
+## PCA aggregate counts
+pseudo <- AggregateExpression(ln.singlet, assays = "RNA", return.seurat = F, 
+                              group.by =  "animal")
+
+df <- ln.singlet@meta.data |> 
+  select(animal, group, log_VL_wk36_posttx,
+         `LOG_SIVRNA_LN_per10^6correctedCD4Live_wk36_posttx`,
+         `LOG_SIV/DNA_LN_per10^6correctedCD4Live_wk36_posttx`) |>
+  unique() |> 
+  mutate(animal = sub('^3', 'g3', animal)) |> 
+  left_join(colSums(pseudo$RNA > 0) |> 
+              enframe(name = 'animal', value = 'ngeneson')) |> 
+  arrange(match(animal, colnames(pseudo$RNA))) |> 
+  column_to_rownames('animal')
+
+se <- SummarizedExperiment::SummarizedExperiment(as.matrix(pseudo$RNA), colData = df)
+
+dds <- DESeq2::DESeqDataSet(se, design = ~ group)
+
+vsd <- vst(dds, blind=FALSE)
+
+pca.p <- plotPCA(vsd, intgroup = 'group') + geom_label_repel(aes(label = name))
+
+ggsave('results/figures/pca_aggregate_counts.pdf', pca.p)
+
+## Differential expression analysis
+pseudo <- AggregateExpression(ln.singlet, assays = "RNA", return.seurat = T, 
+                              group.by = c("group", "animal", "singleR.label.fine"))
+
+pseudo$celltype.group <- paste(pseudo$singleR.label.fine, pseudo$group, sep = "_")
+
+Idents(pseudo) <- "celltype.group"
+
+bulk.treg.de.ctrl <- FindMarkers(object = pseudo, 
+                            ident.1 = "Follicular helper T cells_aIL10+aPD1", 
+                            ident.2 = "Follicular helper T cells_Control",
+                            test.use = "DESeq2")
+
+bulk.treg.de.ail10 <- FindMarkers(object = pseudo, 
+                            ident.1 = "Follicular helper T cells_aIL10+aPD1", 
+                            ident.2 = "Follicular helper T cells_aIL10",
+                            test.use = "DESeq2")
 ```
 
 ```{r ATAC Gene activity & Chromvar}
