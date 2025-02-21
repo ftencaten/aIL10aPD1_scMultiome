@@ -406,7 +406,7 @@ ln.singlet <- AddMetaData(ln.singlet, meta.celltypist.annot)
 ln.singlet <- readRDS('data/processed/ln.annot.rds')
 ```
 
-```{r}
+```{r Bile-acid receptors plots}
 ln.singlet <- readRDS('data/processed/ln.annot.rds')
 
 ln.singlet <- FindClusters(ln.singlet, graph.name = "wsnn", algorithm = 4, 
@@ -624,55 +624,3 @@ bulk.treg.de.ail10 <- FindMarkers(object = pseudo,
                             ident.2 = "Follicular helper T cells_aIL10",
                             test.use = "DESeq2")
 ```
-
-```{r ATAC Gene activity & Chromvar}
-### Estimate gene activity from ATAC-seq
-ln.obj <- readRDS('data/processed/new/ln.integrated_annot.rds')
-
-DefaultAssay(ln.obj) <- 'peaks'
-
-gene.activities <- GeneActivity(ln.obj, assay = 'peaks')
-
-ln.obj[['gene.activity']] <- CreateAssayObject(counts = gene.activities)
-ln.obj <- NormalizeData(
-  object = ln.obj,
-  assay = 'gene.activity',
-  normalization.method = 'LogNormalize',
-  scale.factor = median(ln.obj$nCount_gene.activity)
-)
-
-#saveRDS(ln.obj, 'data/processed/new/ln.integrated_annot_geneactivity.rds')
-
-#### ChromVar
-library(JASPAR2020)
-library(TFBSTools)
-library(AnnotationHub)
-
-ah <- AnnotationHub()
-qrz <- query(ah, c( "mulatta"))
-qr <- query(ah, c("EnsDb", "mulatta", "109"))
-edb <- qr[[1]]
-
-DefaultAssay(ln.obj) <- 'peaks'
- 
-pfm <- getMatrixSet(x = JASPAR2020,
-                    opts = list(collection = "CORE", tax_group = 'vertebrates', 
-                                all_versions = FALSE))
-
-library(BSgenome.Mmulatta.UCSC.rheMac10)
-seqnames(Mmulatta) <- sub('chr', '', seqnames(Mmulatta))
-
-ln.obj <- AddMotifs(object = ln.obj, genome = Mmulatta, pfm = pfm)
-
-ln.obj <- RunChromVAR(object = ln.obj, genome = Mmulatta)
-
-DefaultAssay(ln.obj) <- 'chromvar'
-
-FeaturePlot(ln.obj, reduction = 'wnn.umap',
-            features = c('MA0772.1', 'MA0137.3', 'MA0769.2'), 
-            max.cutoff = 'q95', min.cutoff = 'q1')
-
-DefaultAssay(ln.obj) <- 'RNA'
-#saveRDS(ln.obj, 'data/processed/new/ln.integrated.annot.geneactivity.chromvar.rds')
-```
-
